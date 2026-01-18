@@ -4,9 +4,8 @@ import os
 import asyncio
 import sys
 import time
-import re
 
-# --- 1. THE "ULTIMATE" GLOBAL LOCK ---
+# --- 1. GLOBAL LOCK ---
 if "bot_lock" not in sys.modules:
     sys.modules["bot_lock"] = True
     FIRST_RUN = True
@@ -18,12 +17,12 @@ st.set_page_config(page_title="Bot Server", page_icon="🚀")
 st.title("Service Status: Online ✅")
 st.write("The bot is running in the background.")
 
-# BRIDGE: Injects Streamlit Secrets into environment
+# Load secrets into environment
 for key, value in st.secrets.items():
     os.environ[key] = str(value)
 
-# --- 3. YOUR CODE (FIXED DELIMITERS) ---
-RAW_CODE = """
+# --- 3. BOT CODE (FIXED WITH RAW STRING) ---
+RAW_CODE = r"""
 import os
 import discord
 from discord.ext import commands, tasks
@@ -35,15 +34,12 @@ import uuid
 import hashlib
 import time
 import shutil
-from datetime import datetime, timedelta
-from typing import Optional, Dict, List
+from datetime import datetime
+from typing import Optional, Dict
 import mimetypes
 import humanize
 
-# ──────────────────────────────────────────────────────────────
-# CONFIGURATION
-# ──────────────────────────────────────────────────────────────
-
+# Configuration
 TOKEN = os.getenv('DISCORD_TOKEN')
 if not TOKEN:
     raise ValueError("DISCORD_TOKEN environment variable not set!")
@@ -51,7 +47,7 @@ if not TOKEN:
 CONFIG = {
     "STORAGE_PATH": "./file_storage",
     "DB_PATH": "./file_database.json",
-    "MAX_FILE_SIZE": 100 * 1024 * 1024,  # 100MB
+    "MAX_FILE_SIZE": 100 * 1024 * 1024,
     "DEFAULT_EXPIRY_HOURS": 24,
     "MAX_DOWNLOADS": 10,
     "ALLOWED_FILE_TYPES": ["*"],
@@ -67,10 +63,7 @@ CONFIG = {
 os.makedirs(CONFIG["STORAGE_PATH"], exist_ok=True)
 os.makedirs("./backups", exist_ok=True)
 
-# ──────────────────────────────────────────────────────────────
-# DATABASE MANAGER
-# ──────────────────────────────────────────────────────────────
-
+# Database Manager
 class Database:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -118,10 +111,7 @@ class Database:
 
 db = Database(CONFIG["DB_PATH"])
 
-# ──────────────────────────────────────────────────────────────
-# BOT SETUP
-# ──────────────────────────────────────────────────────────────
-
+# Bot Setup
 intents = discord.Intents.default()
 intents.message_content = True
 
@@ -134,10 +124,7 @@ bot = commands.Bot(
 
 user_cooldowns = {}
 
-# ──────────────────────────────────────────────────────────────
-# HELPER FUNCTIONS
-# ──────────────────────────────────────────────────────────────
-
+# Helper Functions
 def generate_code() -> str:
     return str(uuid.uuid4())[:8].upper()
 
@@ -181,17 +168,14 @@ def get_file_preview(file_path: str, mime_type: str) -> Optional[str]:
         if mime_type.startswith('text/'):
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read(500)
-                return f"```{{content}}```".replace("{content}", content)
+                return "```" + content + "```"
         elif mime_type.startswith('image/'):
             return "🖼️ Image file (preview in Discord)"
     except:
         pass
     return None
 
-# ──────────────────────────────────────────────────────────────
-# FILE MANAGEMENT COMMANDS
-# ──────────────────────────────────────────────────────────────
-
+# File Management Commands
 class FileShare(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -281,9 +265,11 @@ class FileShare(commands.Cog):
             db.data["stats"]["storage_used"] += attachment.size
             db.save()
             
+            # FIX: Build description string separately
+            file_desc = f"**📁 {attachment.filename}**\n📝 {description}"
             embed = discord.Embed(
                 title="✅ File Uploaded Successfully!",
-                description=f"**📁 {attachment.filename}**\n📝 {description}",
+                description=file_desc,
                 color=0x51CF66,
                 timestamp=datetime.utcnow()
             )
