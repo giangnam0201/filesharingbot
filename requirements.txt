@@ -1,0 +1,7 @@
+streamlit
+discord.py
+aiohttp
+requests
+dotenv
+aiofiles
+humanize
