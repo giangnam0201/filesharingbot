@@ -4,9 +4,9 @@ import os
 import asyncio
 import sys
 import time
+import re
+
 # --- 1. THE "ULTIMATE" GLOBAL LOCK ---
-# We check if our custom 'bot_lock' exists in the system modules.
-# This prevents the bot from starting twice, even if the page is refreshed.
 if "bot_lock" not in sys.modules:
     sys.modules["bot_lock"] = True
     FIRST_RUN = True
@@ -18,12 +18,12 @@ st.set_page_config(page_title="Bot Server", page_icon="🚀")
 st.title("Service Status: Online ✅")
 st.write("The bot is running in the background.")
 
-# BRIDGE: Injects Streamlit Secrets into the environment
+# BRIDGE: Injects Streamlit Secrets into environment
 for key, value in st.secrets.items():
     os.environ[key] = str(value)
 
-# --- 3. YOUR CODE ---
-RAW_CODE = '''
+# --- 3. YOUR CODE (FIXED DELIMITERS) ---
+RAW_CODE = """
 import os
 import discord
 from discord.ext import commands, tasks
@@ -39,37 +39,31 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 import mimetypes
 import humanize
-import re
 
 # ──────────────────────────────────────────────────────────────
-# CONFIGURATION & SETUP
+# CONFIGURATION
 # ──────────────────────────────────────────────────────────────
 
-# Secure token loading from environment variable
 TOKEN = os.getenv('DISCORD_TOKEN')
 if not TOKEN:
     raise ValueError("DISCORD_TOKEN environment variable not set!")
 
-# Configuration
 CONFIG = {
     "STORAGE_PATH": "./file_storage",
     "DB_PATH": "./file_database.json",
     "MAX_FILE_SIZE": 100 * 1024 * 1024,  # 100MB
     "DEFAULT_EXPIRY_HOURS": 24,
     "MAX_DOWNLOADS": 10,
-    "ALLOWED_FILE_TYPES": ["*"],  # ["pdf", "jpg", "png"] or ["*"] for all
-    "USER_QUOTA_MB": 500,  # Per user storage limit
+    "ALLOWED_FILE_TYPES": ["*"],
+    "USER_QUOTA_MB": 500,
     "CLEANUP_INTERVAL_HOURS": 1,
-    "LOG_CHANNEL_ID": None,  # Set to log uploads/downloads
-    "ADMIN_IDS": [],  # Add Discord user IDs for admin commands
-    "ENABLE_VIRUS_SCAN": False,  # Requires ClamAV setup
-    "ENCRYPT_FILES": False,  # Optional encryption
+    "LOG_CHANNEL_ID": None,
+    "ADMIN_IDS": [],
     "BACKUP_ENABLED": True,
     "BACKUP_INTERVAL_HOURS": 24,
     "RATE_LIMIT_PER_MINUTE": 10
 }
 
-# Create directories
 os.makedirs(CONFIG["STORAGE_PATH"], exist_ok=True)
 os.makedirs("./backups", exist_ok=True)
 
@@ -138,7 +132,6 @@ bot = commands.Bot(
     case_insensitive=True
 )
 
-# Rate limiting
 user_cooldowns = {}
 
 # ──────────────────────────────────────────────────────────────
@@ -146,11 +139,9 @@ user_cooldowns = {}
 # ──────────────────────────────────────────────────────────────
 
 def generate_code() -> str:
-    """Generate unique 8-character code"""
     return str(uuid.uuid4())[:8].upper()
 
 def get_file_hash(file_path: str) -> str:
-    """Get SHA256 hash of file"""
     sha256_hash = hashlib.sha256()
     with open(file_path, "rb") as f:
         for byte_block in iter(lambda: f.read(4096), b""):
@@ -158,12 +149,10 @@ def get_file_hash(file_path: str) -> str:
     return sha256_hash.hexdigest()
 
 def check_rate_limit(user_id: int) -> bool:
-    """Check if user is rate limited"""
     now = time.time()
     if user_id not in user_cooldowns:
         user_cooldowns[user_id] = []
     
-    # Remove old entries
     user_cooldowns[user_id] = [
         t for t in user_cooldowns[user_id] 
         if now - t < 60
@@ -176,27 +165,23 @@ def check_rate_limit(user_id: int) -> bool:
     return True
 
 def format_file_size(size: int) -> str:
-    """Format bytes to human readable"""
     return humanize.naturalsize(size)
 
 def is_admin(user_id: int) -> bool:
-    """Check if user is admin"""
     return user_id in CONFIG["ADMIN_IDS"]
 
 def validate_file_type(filename: str) -> bool:
-    """Check if file type is allowed"""
     if "*" in CONFIG["ALLOWED_FILE_TYPES"]:
         return True
     ext = filename.split('.')[-1].lower()
     return ext in CONFIG["ALLOWED_FILE_TYPES"]
 
 def get_file_preview(file_path: str, mime_type: str) -> Optional[str]:
-    """Get preview for text files and images"""
     try:
         if mime_type.startswith('text/'):
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read(500)
-                return f"```{content}```"
+                return f"```{{content}}```".replace("{content}", content)
         elif mime_type.startswith('image/'):
             return "🖼️ Image file (preview in Discord)"
     except:
@@ -216,7 +201,6 @@ class FileShare(commands.Cog):
 
     @commands.command(name="upload", aliases=["up"])
     async def upload_file(self, ctx, *, description: str = "No description"):
-        """Upload a file and get a share code"""
         if not ctx.message.attachments:
             embed = discord.Embed(
                 title="❌ No File Attached",
@@ -237,7 +221,6 @@ class FileShare(commands.Cog):
         
         attachment = ctx.message.attachments[0]
         
-        # Validation
         if attachment.size > CONFIG["MAX_FILE_SIZE"]:
             embed = discord.Embed(
                 title="❌ File Too Large",
@@ -256,7 +239,6 @@ class FileShare(commands.Cog):
             await ctx.reply(embed=embed)
             return
         
-        # Check user quota
         user_id = str(ctx.author.id)
         user_quota = db.data["users"].get(user_id, {"used_space": 0})
         if user_quota["used_space"] + attachment.size > CONFIG["USER_QUOTA_MB"] * 1024 * 1024:
@@ -268,18 +250,15 @@ class FileShare(commands.Cog):
             await ctx.reply(embed=embed)
             return
         
-        # Generate code and download
         file_code = generate_code()
         file_path = os.path.join(CONFIG["STORAGE_PATH"], f"{file_code}_{attachment.filename}")
         
         try:
             await attachment.save(file_path)
             
-            # Get file info
             mime_type, _ = mimetypes.guess_type(file_path)
             file_hash = get_file_hash(file_path)
             
-            # Create metadata
             metadata = {
                 "filename": attachment.filename,
                 "size": attachment.size,
@@ -296,14 +275,12 @@ class FileShare(commands.Cog):
                 "original_name": ctx.author.name
             }
             
-            # Save to DB
             db.add_file(file_code, metadata)
             db.update_user_quota(ctx.author.id, attachment.size)
             db.data["stats"]["total_uploads"] += 1
             db.data["stats"]["storage_used"] += attachment.size
             db.save()
             
-            # Create embed
             embed = discord.Embed(
                 title="✅ File Uploaded Successfully!",
                 description=f"**📁 {attachment.filename}**\n📝 {description}",
@@ -314,15 +291,11 @@ class FileShare(commands.Cog):
             embed.add_field(name="🔑 Code", value=f"`{file_code}`", inline=True)
             embed.add_field(name="📊 Size", value=format_file_size(attachment.size), inline=True)
             embed.add_field(name="⏰ Expires", value=f"{CONFIG['DEFAULT_EXPIRY_HOURS']}h", inline=True)
-            
-            embed.add_field(name="🔗 Download Link", 
-                           value=f"Use: `!download {file_code}`", inline=False)
-            
+            embed.add_field(name="🔗 Download Link", value=f"Use: `!download {file_code}`", inline=False)
             embed.set_footer(text=f"Uploaded by {ctx.author.name} | Max downloads: {CONFIG['MAX_DOWNLOADS']}")
             
             await ctx.reply(embed=embed)
             
-            # Log if enabled
             if CONFIG["LOG_CHANNEL_ID"]:
                 await self.log_upload(ctx, metadata)
             
@@ -338,7 +311,6 @@ class FileShare(commands.Cog):
 
     @commands.command(name="download", aliases=["get", "dl"])
     async def download_file(self, ctx, code: str):
-        """Download a file using its code"""
         code = code.upper().strip()
         file_data = db.get_file(code)
         
@@ -351,7 +323,6 @@ class FileShare(commands.Cog):
             await ctx.reply(embed=embed)
             return
         
-        # Check expiry
         if time.time() > file_data["expiry_time"]:
             embed = discord.Embed(
                 title="⏰ File Expired",
@@ -362,7 +333,6 @@ class FileShare(commands.Cog):
             await self.cleanup_expired()
             return
         
-        # Check download limit
         if file_data["download_count"] >= file_data["max_downloads"]:
             embed = discord.Embed(
                 title="🚫 Download Limit Reached",
@@ -372,7 +342,6 @@ class FileShare(commands.Cog):
             await ctx.reply(embed=embed)
             return
         
-        # Check if file still exists
         if not os.path.exists(file_data["file_path"]):
             embed = discord.Embed(
                 title="❌ File Missing",
@@ -384,10 +353,7 @@ class FileShare(commands.Cog):
             return
         
         try:
-            # Send file
             file = discord.File(file_data["file_path"], filename=file_data["filename"])
-            
-            # Get preview for text files
             preview = get_file_preview(file_data["file_path"], file_data["mime_type"])
             if preview:
                 await ctx.reply(f"📄 **Preview:**\n{preview}", mention_author=False)
@@ -397,16 +363,13 @@ class FileShare(commands.Cog):
                 file=file
             )
             
-            # Update stats
             db.data["files"][code]["download_count"] += 1
             db.data["stats"]["total_downloads"] += 1
             db.save()
             
-            # Log download
             if CONFIG["LOG_CHANNEL_ID"]:
                 await self.log_download(ctx, file_data)
             
-            # Auto-delete if reached max downloads
             if db.data["files"][code]["download_count"] >= file_data["max_downloads"]:
                 await ctx.send("🗑️ File reached max downloads and was deleted.")
                 await self.delete_file(code)
@@ -421,7 +384,6 @@ class FileShare(commands.Cog):
 
     @commands.command(name="info", aliases=["code"])
     async def file_info(self, ctx, code: str):
-        """Get information about a file"""
         code = code.upper().strip()
         file_data = db.get_file(code)
         
@@ -456,7 +418,6 @@ class FileShare(commands.Cog):
 
     @commands.command(name="list", aliases=["files"])
     async def list_files(self, ctx, user: discord.Member = None):
-        """List your uploaded files or another user's files"""
         target_user = user or ctx.author
         user_id = str(target_user.id)
         
@@ -483,7 +444,6 @@ class FileShare(commands.Cog):
             await ctx.reply(embed=embed)
             return
         
-        # Paginate results
         page_size = 5
         pages = [user_files[i:i + page_size] for i in range(0, len(user_files), page_size)]
         
@@ -510,7 +470,6 @@ class FileShare(commands.Cog):
 
     @commands.command(name="delete", aliases=["remove"])
     async def delete_file(self, ctx, code: str):
-        """Delete one of your files"""
         code = code.upper().strip()
         file_data = db.get_file(code)
         
@@ -555,7 +514,6 @@ class FileShare(commands.Cog):
 
     @commands.command(name="quota", aliases=["space"])
     async def check_quota(self, ctx, user: discord.Member = None):
-        """Check your storage quota or another user's quota"""
         target_user = user or ctx.author
         user_id = str(target_user.id)
         
@@ -575,19 +533,13 @@ class FileShare(commands.Cog):
         
         await ctx.reply(embed=embed)
 
-    # ──────────────────────────────────────────────────────────────
-    # ADMIN COMMANDS
-    # ──────────────────────────────────────────────────────────────
-
     @commands.command(name="admin_delete")
     @commands.check(is_admin)
     async def admin_delete(self, ctx, code: str):
-        """Admin: Delete any file"""
         await self.delete_file(ctx, code)
 
     @commands.command(name="stats", aliases=["statistics"])
     async def bot_stats(self, ctx):
-        """Show bot statistics"""
         embed = discord.Embed(
             title="📈 Bot Statistics",
             color=0x9B59B6
@@ -605,7 +557,6 @@ class FileShare(commands.Cog):
 
     @commands.command(name="setexpiry", aliases=["extend"])
     async def set_expiry(self, ctx, code: str, hours: int):
-        """Set custom expiry time for your file (in hours)"""
         code = code.upper().strip()
         file_data = db.get_file(code)
         
@@ -625,7 +576,6 @@ class FileShare(commands.Cog):
 
     @commands.command(name="setdownloads", aliases=["limit"])
     async def set_download_limit(self, ctx, code: str, limit: int):
-        """Set custom download limit for your file"""
         code = code.upper().strip()
         file_data = db.get_file(code)
         
@@ -642,13 +592,8 @@ class FileShare(commands.Cog):
         
         await ctx.reply(f"✅ Download limit set to {limit}.")
 
-    # ──────────────────────────────────────────────────────────────
-    # UTILITY COMMANDS
-    # ──────────────────────────────────────────────────────────────
-
     @commands.command(name="search", aliases=["find"])
     async def search_files(self, ctx, *, query: str):
-        """Search for files by filename or description"""
         results = []
         for code, file_data in db.data["files"].items():
             if query.lower() in file_data["filename"].lower() or \
@@ -665,7 +610,7 @@ class FileShare(commands.Cog):
             color=0x3398DB
         )
         
-        for file_data in results[:5]:  # Show top 5
+        for file_data in results[:5]:
             expires_in = file_data["expiry_time"] - time.time()
             embed.add_field(
                 name=f"{file_data['code']} - {file_data['filename']}",
@@ -679,7 +624,6 @@ class FileShare(commands.Cog):
 
     @commands.command(name="help", aliases=["commands"])
     async def show_help(self, ctx):
-        """Show all available commands"""
         embed = discord.Embed(
             title="📚 FileShare Bot Commands",
             description="A powerful file sharing bot with codes!",
@@ -729,12 +673,7 @@ class FileShare(commands.Cog):
         embed.set_footer(text="Bot by FileShare | Secure file sharing made easy!")
         await ctx.reply(embed=embed)
 
-    # ──────────────────────────────────────────────────────────────
-    # LOGGING
-    # ──────────────────────────────────────────────────────────────
-
     async def log_upload(self, ctx, file_data: Dict):
-        """Log file upload"""
         if not CONFIG["LOG_CHANNEL_ID"]:
             return
         
@@ -757,7 +696,6 @@ class FileShare(commands.Cog):
         await channel.send(embed=embed)
 
     async def log_download(self, ctx, file_data: Dict):
-        """Log file download"""
         if not CONFIG["LOG_CHANNEL_ID"]:
             return
         
@@ -779,17 +717,11 @@ class FileShare(commands.Cog):
         
         await channel.send(embed=embed)
 
-    # ──────────────────────────────────────────────────────────────
-    # BACKGROUND TASKS
-    # ──────────────────────────────────────────────────────────────
-
     @tasks.loop(hours=CONFIG["CLEANUP_INTERVAL_HOURS"])
     async def cleanup_task(self):
-        """Auto-cleanup expired files"""
         await self.cleanup_expired()
     
     async def cleanup_expired(self):
-        """Remove expired files"""
         now = time.time()
         expired = []
         
@@ -809,12 +741,10 @@ class FileShare(commands.Cog):
     
     @tasks.loop(hours=CONFIG["BACKUP_INTERVAL_HOURS"])
     async def backup_task(self):
-        """Create database backup"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_path = f"./backups/database_{timestamp}.json"
         shutil.copy(CONFIG["DB_PATH"], backup_path)
         
-        # Keep only last 10 backups
         backups = sorted(os.listdir("./backups"))
         for old_backup in backups[:-10]:
             os.remove(f"./backups/{old_backup}")
@@ -827,7 +757,6 @@ class FileShare(commands.Cog):
     @commands.command(name="cleanup")
     @commands.check(is_admin)
     async def force_cleanup(self, ctx):
-        """Force immediate cleanup"""
         await ctx.send("🧹 Starting cleanup...")
         await self.cleanup_expired()
         await ctx.send("✅ Cleanup complete!")
@@ -835,13 +764,8 @@ class FileShare(commands.Cog):
     @commands.command(name="backup")
     @commands.check(is_admin)
     async def force_backup(self, ctx):
-        """Force immediate backup"""
         await self.backup_task()
         await ctx.send("💾 Backup created!")
-
-# ──────────────────────────────────────────────────────────────
-# BOT EVENTS
-# ──────────────────────────────────────────────────────────────
 
 @bot.event
 async def on_ready():
@@ -854,7 +778,6 @@ async def on_ready():
 
 @bot.event
 async def on_command_error(ctx, error):
-    """Handle command errors"""
     if isinstance(error, commands.CommandNotFound):
         embed = discord.Embed(
             title="❌ Unknown Command",
@@ -873,15 +796,10 @@ async def on_command_error(ctx, error):
         await ctx.reply(embed=embed)
         print(f"Error: {error}")
 
-# ──────────────────────────────────────────────────────────────
-# RUN BOT
-# ──────────────────────────────────────────────────────────────
-
 async def main():
     async with bot:
         await bot.add_cog(FileShare(bot))
         
-        # Verify token
         if not TOKEN or TOKEN == "YOUR_BOT_TOKEN_HERE":
             print("❌ DISCORD_TOKEN environment variable not set!")
             print("Set it with: export DISCORD_TOKEN='your_token_here'")
@@ -891,15 +809,12 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-'''
+"""
 
 # --- 4. STARTUP ENGINE ---
 def run_bot():
-    # Setup new loop for this specific background thread
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
-    # Passing 'globals()' ensures functions can see each other
     exec(RAW_CODE, globals())
 
 if FIRST_RUN:
@@ -909,6 +824,5 @@ if FIRST_RUN:
 else:
     st.info("ℹ️ Bot is already running in the background.")
 
-# Show a small clock so the user knows the page is "alive"
 st.divider()
 st.caption(f"Last page refresh: {time.strftime('%H:%M:%S')}")
