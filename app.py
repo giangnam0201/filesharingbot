@@ -21,7 +21,7 @@ st.write("The bot is running in the background.")
 for key, value in st.secrets.items():
     os.environ[key] = str(value)
 
-# --- 3. BOT CODE (FIXED WITH RAW STRING) ---
+# --- 3. BOT CODE (FIXED METHOD NAME) ---
 RAW_CODE = r"""
 import os
 import discord
@@ -265,7 +265,6 @@ class FileShare(commands.Cog):
             db.data["stats"]["storage_used"] += attachment.size
             db.save()
             
-            # FIX: Build description string separately
             file_desc = f"**📁 {attachment.filename}**\n📝 {description}"
             embed = discord.Embed(
                 title="✅ File Uploaded Successfully!",
@@ -524,8 +523,9 @@ class FileShare(commands.Cog):
     async def admin_delete(self, ctx, code: str):
         await self.delete_file(ctx, code)
 
+    # FIX: Renamed from bot_stats to show_stats
     @commands.command(name="stats", aliases=["statistics"])
-    async def bot_stats(self, ctx):
+    async def show_stats(self, ctx):
         embed = discord.Embed(
             title="📈 Bot Statistics",
             color=0x9B59B6
