@@ -1,12 +1,10 @@
 import os
 import json
 import uuid
-import asyncio
-import zipfile
 import time
+import zipfile
+import asyncio
 from aiohttp import web
-import discord
-from discord.ext import commands
 
 # =========================
 # CONFIG
@@ -15,7 +13,6 @@ PORT = int(os.environ.get("PORT", 10000))
 UPLOAD_DIR = "uploads"
 DB_FILE = "files.json"
 MAX_FILE_AGE = 60 * 60  # 1 hour
-DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -36,39 +33,73 @@ def save_db(db):
 db = load_db()
 
 # =========================
-# WEB ROUTES
+# HTML TEMPLATES
 # =========================
-async def index(request):
-    return web.Response(
-        text="""
+def page(title, body):
+    return f"""
 <!DOCTYPE html>
 <html>
 <head>
-<title>File Upload</title>
+<title>{title}</title>
 <style>
-body { font-family: Arial; background:#111; color:#eee; text-align:center }
-.box { background:#222; padding:20px; border-radius:10px; width:400px; margin:auto }
+body {{
+    font-family: Arial;
+    background:#0f0f0f;
+    color:#eee;
+}}
+.container {{
+    max-width:600px;
+    margin:40px auto;
+    background:#1a1a1a;
+    padding:20px;
+    border-radius:10px;
+}}
+input, button {{
+    width:100%;
+    padding:10px;
+    margin-top:10px;
+    border-radius:6px;
+    border:none;
+}}
+button {{
+    background:#5865F2;
+    color:white;
+    cursor:pointer;
+}}
+a {{ color:#58a6ff }}
+small {{ opacity:0.6 }}
 </style>
 </head>
 <body>
-<h1>📦 Upload Files</h1>
-<div class="box">
-<form action="/upload" method="post" enctype="multipart/form-data">
-<input type="file" name="files" multiple><br><br>
-<input type="password" name="password" placeholder="Download password (optional)"><br><br>
-<button type="submit">Upload</button>
-</form>
+<div class="container">
+{body}
 </div>
 </body>
 </html>
-""",
+"""
+
+# =========================
+# ROUTES
+# =========================
+async def home(request):
+    return web.Response(
+        text=page("Upload",
+        """
+<h1>📦 File Upload</h1>
+<form action="/upload" method="post" enctype="multipart/form-data">
+<input type="file" name="files" multiple required>
+<input type="password" name="password" placeholder="Download password (optional)">
+<button>Upload</button>
+</form>
+<small>One-time download · Auto-delete · ZIP</small>
+"""),
         content_type="text/html"
     )
 
 async def upload(request):
     reader = await request.multipart()
-    password = None
     files = []
+    password = None
 
     while True:
         part = await reader.next()
@@ -78,29 +109,31 @@ async def upload(request):
         if part.name == "password":
             password = await part.text()
         elif part.name == "files":
-            filename = part.filename
             file_id = str(uuid.uuid4())
-            filepath = os.path.join(UPLOAD_DIR, file_id + "_" + filename)
+            filepath = os.path.join(UPLOAD_DIR, file_id + "_" + part.filename)
 
             with open(filepath, "wb") as f:
                 while chunk := await part.read_chunk():
                     f.write(chunk)
 
-            files.append((file_id, filename, filepath))
+            files.append(filepath)
 
     bundle_id = str(uuid.uuid4())
     db[bundle_id] = {
-        "files": [f[2] for f in files],
+        "files": files,
         "password": password,
         "created": time.time(),
         "used": False
     }
     save_db(db)
 
-    link = f"/download/{bundle_id}"
-
     return web.Response(
-        text=f"<h2>✅ Uploaded</h2><p><a href='{link}'>Download Link</a></p>",
+        text=page("Uploaded",
+        f"""
+<h2>✅ Upload Complete</h2>
+<p><a href="/download/{bundle_id}">Download link</a></p>
+<small>This link will self-destruct after one download.</small>
+"""),
         content_type="text/html"
     )
 
@@ -109,16 +142,18 @@ async def download(request):
     entry = db.get(bundle_id)
 
     if not entry or entry["used"]:
-        return web.Response(text="❌ Link expired")
+        return web.Response(text=page("Expired", "<h2>❌ Link expired</h2>"), content_type="text/html")
 
     if entry["password"]:
         return web.Response(
-            text=f"""
+            text=page("Password",
+            """
+<h2>🔐 Enter Password</h2>
 <form method="post">
-<input type="password" name="password">
+<input type="password" name="password" required>
 <button>Unlock</button>
 </form>
-""",
+"""),
             content_type="text/html"
         )
 
@@ -130,10 +165,10 @@ async def download_post(request):
     data = await request.post()
 
     if not entry or entry["used"]:
-        return web.Response(text="❌ Link expired")
+        return web.Response(text="Expired")
 
     if data.get("password") != entry["password"]:
-        return web.Response(text="❌ Wrong password")
+        return web.Response(text=page("Wrong", "<h2>❌ Wrong password</h2>"), content_type="text/html")
 
     return await serve_zip(bundle_id)
 
@@ -142,8 +177,8 @@ async def serve_zip(bundle_id):
     zip_path = os.path.join(UPLOAD_DIR, bundle_id + ".zip")
 
     with zipfile.ZipFile(zip_path, "w") as zipf:
-        for file in entry["files"]:
-            zipf.write(file, arcname=os.path.basename(file))
+        for f in entry["files"]:
+            zipf.write(f, arcname=os.path.basename(f))
 
     entry["used"] = True
     save_db(db)
@@ -151,40 +186,26 @@ async def serve_zip(bundle_id):
     return web.FileResponse(zip_path)
 
 # =========================
-# CLEANUP TASK
+# CLEANUP LOOP
 # =========================
 async def cleanup_loop():
     while True:
         now = time.time()
-        for k in list(db.keys()):
-            if now - db[k]["created"] > MAX_FILE_AGE:
-                for f in db[k]["files"]:
+        for key in list(db.keys()):
+            if now - db[key]["created"] > MAX_FILE_AGE:
+                for f in db[key]["files"]:
                     if os.path.exists(f):
                         os.remove(f)
-                db.pop(k)
+                db.pop(key)
         save_db(db)
         await asyncio.sleep(300)
-
-# =========================
-# DISCORD BOT
-# =========================
-intents = discord.Intents.default()
-bot = commands.Bot(command_prefix="!", intents=intents)
-
-@bot.event
-async def on_ready():
-    print(f"🤖 Logged in as {bot.user}")
-
-@bot.command()
-async def upload(ctx):
-    await ctx.send("📤 Upload files at: https://YOUR_RENDER_URL")
 
 # =========================
 # MAIN
 # =========================
 async def main():
     app = web.Application()
-    app.router.add_get("/", index)
+    app.router.add_get("/", home)
     app.router.add_post("/upload", upload)
     app.router.add_get("/download/{id}", download)
     app.router.add_post("/download/{id}", download_post)
@@ -194,8 +215,9 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
+    print(f"🌐 Web server running on port {PORT}")
+
     asyncio.create_task(cleanup_loop())
-    asyncio.create_task(bot.start(DISCORD_TOKEN))
 
     while True:
         await asyncio.sleep(3600)
