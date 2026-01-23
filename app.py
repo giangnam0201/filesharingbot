@@ -95,7 +95,7 @@ a { color: #38bdf8; }
 </head>
 <body>
 <div class="box">
-{{ body }}
+{{ body|safe }}
 </div>
 </body>
 </html>
