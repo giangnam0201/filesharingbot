@@ -2,10 +2,8 @@ import os
 import json
 import time
 import uuid
-import hashlib
 import threading
 import requests
-from datetime import datetime
 from flask import Flask, request, redirect, session, abort, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 import humanize
@@ -14,6 +12,7 @@ import humanize
 APP_SECRET = os.getenv("APP_SECRET", "super-secret-key")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 DB_FILE = "database.json"
+PORT = int(os.getenv("PORT", 10000))
 
 # =========================================
 
@@ -33,8 +32,6 @@ def save_db(db):
     with open(DB_FILE, "w") as f:
         json.dump(db, f, indent=2)
 
-db = load_db()
-
 # ================ UTILS ===================
 def uptime():
     return humanize.naturaldelta(int(time.time() - START_TIME))
@@ -48,16 +45,16 @@ def cleanup_task():
         time.sleep(3600)
         db = load_db()
         changed = False
-        for k in list(db["files"].keys()):
-            if time.time() - db["files"][k]["created"] > 60 * 60 * 24 * 30:
-                del db["files"][k]
+        for code in list(db["files"].keys()):
+            if time.time() - db["files"][code]["created"] > 60 * 60 * 24 * 30:
+                del db["files"][code]
                 changed = True
         if changed:
             save_db(db)
 
 threading.Thread(target=cleanup_task, daemon=True).start()
 
-# ================ HTML ====================
+# ================ STYLES ==================
 BASE_CSS = """
 body{background:#0f1220;color:#fff;font-family:Arial}
 .card{max-width:900px;margin:40px auto;background:#161a2e;padding:25px;border-radius:14px}
@@ -73,45 +70,66 @@ a{color:#7aa2ff;text-decoration:none}
 
 @app.route("/")
 def home():
-    return f"""
-    <html><style>{BASE_CSS}</style>
-    <div class=card>
-    <h1>🚀 Web File Share</h1>
-    <p>Unlimited file size · Gofile powered · Secure</p>
-    <form id=upload>
-      <input type=file id=file required>
-      <input type=password id=password placeholder="Password (optional)">
-      <button>Upload</button>
-    </form>
-    <div class=progress><div class=bar id=bar></div></div>
-    <pre id=out></pre>
-    <script>
-    const f=document.getElementById('upload');
-    f.onsubmit=async e=>{
-      e.preventDefault();
-      let file=document.getElementById('file').files[0];
-      let pw=document.getElementById('password').value;
-      let s=await fetch('/api/server').then(r=>r.json());
-      let fd=new FormData();
-      fd.append('file',file);
-      let xhr=new XMLHttpRequest();
-      xhr.upload.onprogress=e=>{
-        document.getElementById('bar').style.width=(e.loaded/e.total*100)+'%';
-      };
-      xhr.onload=()=>{
-        let r=JSON.parse(xhr.responseText);
-        fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({id:r.data.fileId,link:r.data.downloadPage,password:pw})})
-          .then(r=>r.json()).then(j=>{
-            document.getElementById('out').innerText='Link: '+location.origin+'/d/'+j.code;
-          });
-      };
-      xhr.open('POST','https://'+s.server+'.gofile.io/uploadFile');
-      xhr.send(fd);
-    };
-    </script>
-    </div></html>
-    """
+    return """
+<!DOCTYPE html>
+<html>
+<head>
+<style>{css}</style>
+</head>
+<body>
+<div class="card">
+<h1>🚀 Web File Share</h1>
+<p>Unlimited uploads · Gofile powered · Password protected</p>
+
+<input type="file" id="file">
+<input type="password" id="password" placeholder="Password (optional)">
+<button onclick="upload()">Upload</button>
+
+<div class="progress"><div class="bar" id="bar"></div></div>
+<pre id="out"></pre>
+
+<script>
+async function upload() {{
+  let file = document.getElementById('file').files[0];
+  if(!file) return alert("No file selected");
+
+  let pw = document.getElementById('password').value;
+
+  let s = await fetch('/api/server').then(r=>r.json());
+
+  let fd = new FormData();
+  fd.append('file', file);
+
+  let xhr = new XMLHttpRequest();
+  xhr.upload.onprogress = function(e) {{
+    document.getElementById('bar').style.width =
+      Math.round(e.loaded / e.total * 100) + '%';
+  }};
+
+  xhr.onload = function() {{
+    let r = JSON.parse(xhr.responseText);
+    fetch('/api/register', {{
+      method:'POST',
+      headers:{{'Content-Type':'application/json'}},
+      body:JSON.stringify({{
+        id:r.data.fileId,
+        link:r.data.downloadPage,
+        password:pw
+      }})
+    }).then(r=>r.json()).then(j=>{
+      document.getElementById('out').innerText =
+        location.origin + '/d/' + j.code;
+    });
+  }};
+
+  xhr.open('POST','https://' + s.server + '.gofile.io/uploadFile');
+  xhr.send(fd);
+}}
+</script>
+</div>
+</body>
+</html>
+""".format(css=BASE_CSS)
 
 @app.route("/api/server")
 def api_server():
@@ -136,49 +154,57 @@ def download(code):
     f = db["files"].get(code)
     if not f:
         abort(404)
+
     if f["password"]:
         if request.method == "POST":
             if check_password_hash(f["password"], request.form["password"]):
-                session["ok_"+code]=True
+                session["ok_"+code] = True
             else:
                 return "Wrong password"
+
         if not session.get("ok_"+code):
-            return f"""
-            <html><style>{BASE_CSS}</style>
-            <div class=card>
+            return """
+            <html><style>{css}</style>
+            <div class="card">
             <h1>🔐 Password Required</h1>
-            <form method=post>
-            <input type=password name=password required>
-            <button>Unlock</button>
-            </form></div></html>
-            """
+            <form method="post">
+              <input type="password" name="password">
+              <button>Unlock</button>
+            </form>
+            </div></html>
+            """.format(css=BASE_CSS)
+
     return redirect(f["gofile"])
 
 @app.route("/admin", methods=["GET","POST"])
 def admin():
-    if request.method=="POST":
-        if request.form["password"]==ADMIN_PASSWORD:
-            session["admin"]=True
+    if request.method == "POST":
+        if request.form.get("password") == ADMIN_PASSWORD:
+            session["admin"] = True
+
     if not session.get("admin"):
-        return f"""
-        <html><style>{BASE_CSS}</style>
-        <div class=card>
+        return """
+        <html><style>{css}</style>
+        <div class="card">
         <h1>Admin Login</h1>
-        <form method=post>
-        <input type=password name=password>
-        <button>Login</button>
-        </form></div></html>
-        """
+        <form method="post">
+          <input type="password" name="password">
+          <button>Login</button>
+        </form>
+        </div></html>
+        """.format(css=BASE_CSS)
+
     db = load_db()
-    rows=""
+    rows = ""
     for k,v in db["files"].items():
-        rows+=f"<tr><td>{k}</td><td><a href={v['gofile']}>Gofile</a></td></tr>"
+        rows += f"<tr><td>{k}</td><td><a href='{v['gofile']}'>Gofile</a></td></tr>"
+
     return f"""
     <html><style>{BASE_CSS}</style>
-    <div class=card>
+    <div class="card">
     <h1>📊 Admin Panel</h1>
     <p>Uptime: {uptime()}</p>
-    <table border=1 cellpadding=10>
+    <table border="1" cellpadding="10">
     <tr><th>Code</th><th>Link</th></tr>
     {rows}
     </table>
@@ -191,4 +217,4 @@ def keep_alive():
 
 # ================= START ==================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT",10000)))
+    app.run(host="0.0.0.0", port=PORT)
