@@ -1,9 +1,4 @@
-import os
-import json
-import time
-import uuid
-import threading
-import requests
+import os, json, time, uuid, threading, requests
 from flask import Flask, request, redirect, session, abort, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 import humanize
@@ -15,7 +10,6 @@ DB_FILE = "database.json"
 PORT = int(os.getenv("PORT", 10000))
 
 # =========================================
-
 app = Flask(__name__)
 app.secret_key = APP_SECRET
 START_TIME = time.time()
@@ -37,117 +31,114 @@ def uptime():
     return humanize.naturaldelta(int(time.time() - START_TIME))
 
 def get_gofile_server():
-    r = requests.get("https://api.gofile.io/servers").json()
-    return r["data"]["servers"][0]["name"]
+    return requests.get("https://api.gofile.io/servers").json()["data"]["servers"][0]["name"]
 
-def cleanup_task():
+def cleanup():
     while True:
         time.sleep(3600)
         db = load_db()
-        changed = False
-        for code in list(db["files"].keys()):
-            if time.time() - db["files"][code]["created"] > 60 * 60 * 24 * 30:
-                del db["files"][code]
-                changed = True
-        if changed:
-            save_db(db)
+        for k in list(db["files"].keys()):
+            if time.time() - db["files"][k]["created"] > 60*60*24*30:
+                del db["files"][k]
+        save_db(db)
 
-threading.Thread(target=cleanup_task, daemon=True).start()
+threading.Thread(target=cleanup, daemon=True).start()
 
-# ================ STYLES ==================
-BASE_CSS = """
+# ================ CSS =====================
+CSS = """
 body{background:#0f1220;color:#fff;font-family:Arial}
 .card{max-width:900px;margin:40px auto;background:#161a2e;padding:25px;border-radius:14px}
 h1{color:#7aa2ff}
 input,button{padding:12px;border-radius:10px;border:none;width:100%;margin-top:10px}
 button{background:#7aa2ff;color:#000;font-weight:bold;cursor:pointer}
-a{color:#7aa2ff;text-decoration:none}
 .progress{height:20px;background:#222;border-radius:10px;overflow:hidden;margin-top:10px}
 .bar{height:100%;width:0%;background:#7aa2ff}
+table{width:100%;border-collapse:collapse}
+td,th{padding:10px;border-bottom:1px solid #333}
+a{color:#7aa2ff}
 """
 
-# ================ ROUTES ==================
-
+# ================ HOME ====================
 @app.route("/")
 def home():
-    return """
+    html = """
 <!DOCTYPE html>
 <html>
 <head>
-<style>{css}</style>
+<style>%%CSS%%</style>
 </head>
 <body>
 <div class="card">
 <h1>🚀 Web File Share</h1>
-<p>Unlimited uploads · Gofile powered · Password protected</p>
 
 <input type="file" id="file">
-<input type="password" id="password" placeholder="Password (optional)">
+<input type="password" id="pw" placeholder="Password (optional)">
 <button onclick="upload()">Upload</button>
 
 <div class="progress"><div class="bar" id="bar"></div></div>
 <pre id="out"></pre>
 
 <script>
-async function upload() {{
-  let file = document.getElementById('file').files[0];
-  if(!file) return alert("No file selected");
+async function upload() {
+  let f = document.getElementById('file').files[0];
+  if(!f) return alert("Select file");
 
-  let pw = document.getElementById('password').value;
-
-  let s = await fetch('/api/server').then(r=>r.json());
+  let pw = document.getElementById('pw').value;
+  let srv = await fetch('/api/server').then(r=>r.json());
 
   let fd = new FormData();
-  fd.append('file', file);
+  fd.append('file', f);
 
-  let xhr = new XMLHttpRequest();
-  xhr.upload.onprogress = function(e) {{
+  let x = new XMLHttpRequest();
+  x.upload.onprogress = e => {
     document.getElementById('bar').style.width =
-      Math.round(e.loaded / e.total * 100) + '%';
-  }};
+      Math.round(e.loaded/e.total*100) + '%';
+  };
 
-  xhr.onload = function() {{
-    let r = JSON.parse(xhr.responseText);
-    fetch('/api/register', {{
+  x.onload = () => {
+    let r = JSON.parse(x.responseText);
+    fetch('/api/register', {
       method:'POST',
-      headers:{{'Content-Type':'application/json'}},
-      body:JSON.stringify({{
-        id:r.data.fileId,
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
         link:r.data.downloadPage,
         password:pw
-      }})
+      })
     }).then(r=>r.json()).then(j=>{
       document.getElementById('out').innerText =
         location.origin + '/d/' + j.code;
     });
-  }};
+  };
 
-  xhr.open('POST','https://' + s.server + '.gofile.io/uploadFile');
-  xhr.send(fd);
-}}
+  x.open('POST','https://' + srv.server + '.gofile.io/uploadFile');
+  x.send(fd);
+}
 </script>
 </div>
 </body>
 </html>
-""".format(css=BASE_CSS)
+"""
+    return html.replace("%%CSS%%", CSS)
 
+# ================ API =====================
 @app.route("/api/server")
 def api_server():
     return jsonify({"server": get_gofile_server()})
 
 @app.route("/api/register", methods=["POST"])
-def api_register():
+def register():
     data = request.json
     code = uuid.uuid4().hex[:6]
     db = load_db()
     db["files"][code] = {
-        "gofile": data["link"],
+        "link": data["link"],
         "password": generate_password_hash(data["password"]) if data["password"] else None,
         "created": time.time()
     }
     save_db(db)
     return jsonify({"code": code})
 
+# ============== DOWNLOAD ==================
 @app.route("/d/<code>", methods=["GET","POST"])
 def download(code):
     db = load_db()
@@ -163,19 +154,21 @@ def download(code):
                 return "Wrong password"
 
         if not session.get("ok_"+code):
-            return """
-            <html><style>{css}</style>
+            page = """
+            <html><style>%%CSS%%</style>
             <div class="card">
-            <h1>🔐 Password Required</h1>
+            <h1>🔐 Password</h1>
             <form method="post">
               <input type="password" name="password">
               <button>Unlock</button>
             </form>
             </div></html>
-            """.format(css=BASE_CSS)
+            """
+            return page.replace("%%CSS%%", CSS)
 
-    return redirect(f["gofile"])
+    return redirect(f["link"])
 
+# ================ ADMIN ===================
 @app.route("/admin", methods=["GET","POST"])
 def admin():
     if request.method == "POST":
@@ -183,8 +176,8 @@ def admin():
             session["admin"] = True
 
     if not session.get("admin"):
-        return """
-        <html><style>{css}</style>
+        page = """
+        <html><style>%%CSS%%</style>
         <div class="card">
         <h1>Admin Login</h1>
         <form method="post">
@@ -192,29 +185,33 @@ def admin():
           <button>Login</button>
         </form>
         </div></html>
-        """.format(css=BASE_CSS)
+        """
+        return page.replace("%%CSS%%", CSS)
 
     db = load_db()
-    rows = ""
-    for k,v in db["files"].items():
-        rows += f"<tr><td>{k}</td><td><a href='{v['gofile']}'>Gofile</a></td></tr>"
+    rows = "".join(
+        f"<tr><td>{k}</td><td><a href='{v['link']}'>Link</a></td></tr>"
+        for k,v in db["files"].items()
+    )
 
-    return f"""
-    <html><style>{BASE_CSS}</style>
+    page = f"""
+    <html><style>{CSS}</style>
     <div class="card">
     <h1>📊 Admin Panel</h1>
     <p>Uptime: {uptime()}</p>
-    <table border="1" cellpadding="10">
+    <table>
     <tr><th>Code</th><th>Link</th></tr>
     {rows}
     </table>
     </div></html>
     """
+    return page
 
+# ============= KEEP ALIVE ================
 @app.route("/keep-alive")
 def keep_alive():
     return "OK"
 
-# ================= START ==================
+# ================ START ===================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
